@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+
+from subprocess import Popen, PIPE, run
+import re
+import os
+import sys
+
+if not os.path.isdir('.git'):
+    sys.exit('[git-gpg-user] Current folder is not git repository.')
+
+def chunks(l, n): 
+    for i in range(0, len(l), n):  
+        yield l[i:i + n] 
+
+def format(s):
+    # removes header
+    s = re.sub(r'^(sec|uid)\s+', '',  s)
+    # general clean up
+    s = re.sub(r'^\[.*\]\s', '',  s)
+    return s
+
+gpg = {}
+is_forced = False
+try:
+    is_forced = sys.argv[1] == '-f'
+except:
+    pass
+
+gpglp = Popen(args='gpg --list-secret-keys --keyid-format LONG'.split(' '), stdout=PIPE)
+gpglp.wait()
+gpg_stdout = filter(lambda s: s[0:3] in ['sec', 'uid'], str(gpglp.stdout.read()).split('\\n'))
+
+gitconfp = Popen(args='git config -l'.split(' '), stdout=PIPE)
+gitconfp.wait()
+try:
+    gitconfp_stdout = str(gitconfp.stdout.read()).split('\\n')
+    curr_gpg = list(filter(lambda s: 'user.signingkey' in s, gitconfp_stdout))[0].split('=')[1]
+except:
+    curr_gpg = None
+
+for [sec, uid] in chunks(list(gpg_stdout), 2):
+    data = re.match(r'^(?P<name>.*)\s\((?P<desc>.*)\)\s\<(?P<email>.*)\>', format(uid)).groupdict()
+    data['signingkey'] = re.match(r'^rsa.*\/(?P<gpg>\S+).*', format(sec)).group('gpg')
+    gpg.update({ data['signingkey'] : data })
+    if data['signingkey'] == curr_gpg and not is_forced:
+        sys.exit('[git-gpg-user] This repo currently using key for <{}>. For override launch script with -f flag.'.format(data['email']))
+
+if len(gpg):
+    if is_forced:
+        run('git config --remove-section user'.split(' '))
+    decl = 'key' if len(gpg) < 2 else 'keys'
+    print('[git-gpg-user] {} {} detected'.format(len(gpg), decl))
+    for i, v in enumerate(gpg.values()):
+        print('{}: {} ({})'.format(i + 1, v['email'], v['desc']))
+    print('[git-gpg-user] Which one to use:')
+    try:
+        index = int(input()) - 1
+    except:
+        sys.exit('[git-gpg-user] Wrong input.')
+
+    selected = list(gpg.values())[index]
+    print('[git-gpg-user] Selected <{}>'.format(selected['email']))
+
+    for key, value in selected.items():
+        if key != 'desc':
+            run(['git', 'config', 'user.{}'.format(key), '{}'.format(value)])
+
+    run('git config commit.gpgsign true'.split(' '))
+else:
+    sys.exit('[git-gpg-user] Keys not found. Using global settings.')
+    
